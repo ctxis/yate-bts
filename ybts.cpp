@@ -1815,7 +1815,7 @@ public:
     // Handle USSD update/finalize messages
     bool handleUssd(Message& msg, bool update);
     // Handle USSD execute messages
-    bool handleUssdExecute(Message& msg, String& dest);
+    bool handleUssdExecute(Message& msg, const String& dest);
     bool getUssdFacility(NamedList& list, String& buf, String& reason, YBTSTid* ss = 0,
 	bool update = true, int* oper = 0);
     // Start an MT USSD. Consume ss on success, might consume it on error
@@ -8560,7 +8560,7 @@ bool YBTSDriver::handleUssd(Message& msg, bool update)
 }
 
 // Handle USSD execute messages
-bool YBTSDriver::handleUssdExecute(Message& msg, String& dest)
+bool YBTSDriver::handleUssdExecute(Message& msg, const String& dest)
 {
     if ((m_state != RadioUp) || !(m_signalling && m_mm)) {
 	Debug(this,DebugWarn,"MT USSD to '%s': Radio is not up!",dest.c_str());
@@ -8576,12 +8576,15 @@ bool YBTSDriver::handleUssdExecute(Message& msg, String& dest)
     String facility;
     String reason;
     int oper = USSDMapOperUnknown;
-    if (!getUssdFacility(msg,facility,reason,0,false,&oper)) {
+
+ 
+ /*   if (!getUssdFacility(msg,facility,reason,0,false,&oper)) {
 	Debug(this,DebugNote,"MT USSD to '%s' failed: %s",
 	    dest.c_str(),reason.safe("empty text"));
 	msg.setParam(s_error,"failure");
 	return false;
-    }
+    } */
+
     unsigned int tout = msg.getIntValue(YSTRING("timeout"),s_ussdTimeout,
 	YBTS_USSD_TIMEOUT_MIN);
     unsigned int maxPdd = getMaxPddPaging(msg,YBTS_USSD_TIMEOUT_MIN,tout);
@@ -8616,11 +8619,13 @@ bool YBTSDriver::handleUssdExecute(Message& msg, String& dest)
     ss->m_pddTout = ss->m_timeout = Time::now();
     ss->m_timeout += (uint64_t)tout * 1000;
     ss->m_pddTout += (uint64_t)maxPdd * 1000;
-    ss->m_data = facility;
+    ss->m_data = msg[YSTRING("tid")];// define Transaction ID
     ss->m_peerId = msg[YSTRING("id")];
     ss->m_startCID = "0";
     ss->m_ue = ue;
     ss->m_cid = 0;
+    ss->m_facility = msg[YSTRING("data")];//define Facility;
+
     if (!conn || conn->waitForTraffic()) {
 	if (!conn && startPaging) {
 	    ss->m_paging = ue->startPaging(ChanTypeSS);
@@ -8640,7 +8645,7 @@ bool YBTSDriver::handleUssdExecute(Message& msg, String& dest)
 	    ss->c_str(),ue->tmsi().safe(),ue->imsi().safe());
     }
     else {
-	const char* fail = startMtSs(conn,ss);
+	const char* fail = startMtSs(conn,ss); // MT USSD
 	TelEngine::destruct(ss);
 	if (fail) {
 	    msg.setParam(s_error,fail);
@@ -8744,19 +8749,32 @@ const char* YBTSDriver::startMtSs(YBTSConn* conn, YBTSTid*& ss)
     }
     conn->m_ss = ss;
     uint64_t tout = ss->m_timeout;
-    String ssId = ss->m_ssId;
-    String callRef = ss->m_callRef;
+    String ssId = ss->m_ssId; // IMSI
+    String callRef = ss->m_data; // TID
     uint8_t sapi = ss->m_sapi;
-    String facility = ss->m_data;
+    String facility = ss->m_facility; // PAYLOAD
     ss = 0;
     lck.drop();
     m_signalling->setConnToutCheck(tout);
+
+    // REGISTER
     if (m_signalling->sendSSRegister(conn,callRef,sapi,facility)) {
 	lck.acquire(ue);
 	Debug(this,DebugInfo,"MT USSD '%s' to (%p) TMSI=%s IMSI=%s started",
 	    ssId.c_str(),(YBTSUE*)ue,ue->tmsi().safe(),ue->imsi().safe());
+
+	// FACILITY
+	m_signalling->sendSS(true,conn,callRef,true,sapi,"",facility);
+    
+	// RELEASE
+	m_signalling->sendSS(false,conn,callRef,true,sapi,"","Release");
+
+	// RESET
+	ss = conn->takeSSTid(ssId);
+	lck.acquire(ue);
 	return 0;
     }
+
     // Take it back
     ss = conn->takeSSTid(ssId);
     lck.acquire(ue);
@@ -10407,8 +10425,15 @@ bool YBTSDriver::received(Message& msg, int id)
 	case MsgExecute:
 	    {
 		const String& dest = msg[YSTRING("callto")];
-		return dest.startsWith(prefix()) &&
-		    handleMsgExecute(msg,dest.substr(prefix().length()));
+		const String& caller = msg[YSTRING("caller")];
+
+		if (caller){ // Not used for USSD
+		    return dest.startsWith(prefix()) &&
+			handleMsgExecute(msg,dest.substr(prefix().length())); // SMS
+		}else{
+		    return dest.startsWith(prefix()) &&
+			handleUssdExecute(msg,dest.substr(prefix().length())); // USSD			
+		}
 	    }
 	case Start:
 	    if (!m_engineStart) {
