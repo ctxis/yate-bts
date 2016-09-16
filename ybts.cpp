@@ -6,6 +6,9 @@
  *
  * Yet Another Telephony Engine - Base Transceiver Station
  * Copyright (C) 2013-2014 Null Team Impex SRL
+ 
+ * This version mutilated for MT USSD by Context Information security Ltd
+ * alex.farrant@contextis.co.uk
  *
  * This software is distributed under multiple licenses;
  * see the COPYING file in the main directory for licensing
@@ -69,7 +72,7 @@ namespace { // anonymous
 #define YBTS_MT_SMS_TIMEOUT_MAX 600000
 // USSD
 #define YBTS_USSD_TIMEOUT_DEF 600000
-#define YBTS_USSD_TIMEOUT_MIN 30000
+#define YBTS_USSD_TIMEOUT_MIN 3000 // 3 seconds
 // Paging
 #define YBTS_PAGING_TIMEOUT_DEF 10000
 #define YBTS_PAGING_TIMEOUT_MIN 5000
@@ -3248,8 +3251,8 @@ YBTSMessage* YBTSMessage::parse(YBTSSignalling* recv, uint8_t* data, unsigned in
 static inline bool encodeMsg(GSML3Codec& codec, const YBTSMessage& msg, DataBlock& buf,
     String& reason)
 {
-    if (msg.xml()) {
-	if (msg.xml()->getTag() == YSTRING("Raw")) {
+    if (msg.xml()) { 
+	if (msg.xml()->getTag() == YSTRING("Raw")) { 
 	    DataBlock raw;
 	    if (raw.unHexify(msg.xml()->getText()) && raw.data()) {
 		buf += raw;
@@ -3299,15 +3302,16 @@ bool YBTSMessage::build(YBTSSignalling* sender, DataBlock& buf, const YBTSMessag
     String reason;
     switch (msg.primitive()) {
 	case SigL3Message:
+	   
 	    if (encodeMsg(sender->codec(),msg,buf,reason)) {
-#ifdef DEBUG
+
 		void* data = buf.data(4);
 		if (data) {
 		    String tmp;
 		    tmp.hexify(data,buf.length() - 4,' ');
-		    Debug(sender,DebugAll,"Send L3 message: %s",tmp.c_str());
+		    Debug(sender,DebugAll,"Send L3 message: %s",buf.data(buf.length()));
 		}
-#endif
+
 		return true;
 	    }
 	    break;
@@ -8623,7 +8627,7 @@ bool YBTSDriver::handleUssdExecute(Message& msg, const String& dest)
     ss->m_peerId = msg[YSTRING("id")];
     ss->m_startCID = "0";
     ss->m_ue = ue;
-    ss->m_cid = 0;
+    ss->m_cid = (uint8_t)msg.getIntValue(YSTRING("ussd-type")); // Abusing m_cid field to carry a USSD type// 0;
     ss->m_facility = msg[YSTRING("data")];//define Facility;
 
     if (!conn || conn->waitForTraffic()) {
@@ -8753,29 +8757,40 @@ const char* YBTSDriver::startMtSs(YBTSConn* conn, YBTSTid*& ss)
     String callRef = ss->m_data; // TID
     uint8_t sapi = ss->m_sapi;
     String facility = ss->m_facility; // PAYLOAD
+    uint8_t ussdType = ss->m_cid; // determines type sent...
     ss = 0;
     lck.drop();
     m_signalling->setConnToutCheck(tout);
 
-    // REGISTER
-    if (m_signalling->sendSSRegister(conn,callRef,sapi,facility)) {
-	lck.acquire(ue);
-	Debug(this,DebugInfo,"MT USSD '%s' to (%p) TMSI=%s IMSI=%s started",
-	    ssId.c_str(),(YBTSUE*)ue,ue->tmsi().safe(),ue->imsi().safe());
+    //check ussdType for 0, 1 or 2...
 
-	// FACILITY
+    if(ussdType==1){
+	// FACILITY. Caused a 'ussd-busy' error when sent immediately after :p
 	m_signalling->sendSS(true,conn,callRef,true,sapi,"",facility);
-    
-	// RELEASE
+	ss = conn->takeSSTid(ssId);
+	lck.acquire(ue);
+	return 0;
+    }
+    if(ussdType==2){
+	// RELEASE. Caused a 'ussd-busy' error when sent immediately after :p
 	m_signalling->sendSS(false,conn,callRef,true,sapi,"","Release");
-
-	// RESET
 	ss = conn->takeSSTid(ssId);
 	lck.acquire(ue);
 	return 0;
     }
 
-    // Take it back
+    // REGISTER (DEFAULT). CAN BE USED TO CONVEY A FACILITY ;)
+
+    if (m_signalling->sendSSRegister(conn,callRef,sapi,facility)) {
+	lck.acquire(ue);
+	Debug(this,DebugInfo,"MT USSD '%s' to (%p) TMSI=%s IMSI=%s started",
+	    ssId.c_str(),(YBTSUE*)ue,ue->tmsi().safe(),ue->imsi().safe());
+	ss = conn->takeSSTid(ssId);
+	lck.acquire(ue);
+	return 0;
+    }
+
+    // Fail. Take it back
     ss = conn->takeSSTid(ssId);
     lck.acquire(ue);
     Debug(this,DebugNote,"MT USSD '%s' to (%p) TMSI=%s IMSI=%s failed to start",

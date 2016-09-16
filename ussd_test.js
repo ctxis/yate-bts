@@ -18,13 +18,13 @@
 /*
  * Mobile Terminated USSD by Context Information Security Ltd
  * alex.farrant@contextis.co.uk
- * control ussd_test callto=234159329821234 tid=32 data=deadbeef
+ * control ussd_test callto=234159329821234 tid=01 type=0 data=deadbeef
  */
 
 function onControl(msg)
 {
-	if (!msg.callto && !msg.text) {
-		msg.retValue("Missing recipient or message. The USSD will not be sent.");
+	if (!msg.callto && !msg.data) {
+		msg.retValue("Missing callto or data. The USSD will not be sent.");
 		msg["operation-status"] = false;
 		return true;
 	}
@@ -36,6 +36,7 @@ function onControl(msg)
 	m.text = msg.data; // PAYLOAD
 	m["data"] = msg.data; // PAYLOAD
 	m["tid"] = msg.tid; // Transaction ID (0-127)
+	m["ussd-type"] = msg.type; // 0 = REGISTER (DEFAULT), 1 = FACILITY, 2 = RELEASE
 	msg["operation-status"] = m.dispatch();
 	return true;
 }
